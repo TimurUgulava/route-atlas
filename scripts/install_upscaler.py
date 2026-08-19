@@ -33,7 +33,7 @@ ASSETS = {
     "Windows": "realesrgan-ncnn-vulkan-20220424-windows.zip",
     "Linux": "realesrgan-ncnn-vulkan-20220424-ubuntu.zip",
 }
-TARGET = os.path.expanduser("~/.claude/tools/realesrgan")
+TARGET = os.path.normpath(os.path.expanduser("~/.claude/tools/realesrgan"))
 BINARY = ("realesrgan-ncnn-vulkan.exe" if platform.system() == "Windows"
           else "realesrgan-ncnn-vulkan")
 
@@ -108,23 +108,23 @@ def main():
 
     if args.check:
         print(f"Система: {system}")
-        print(f"Апскейлер: {existing or 'не установлен'}")
+        print(f"Апскейлер: {os.path.normpath(existing) if existing else 'не установлен'}")
         sys.exit(0 if existing else 1)
 
     if existing and not args.force:
-        print(f"Уже установлен: {existing}\nПереустановить: --force")
+        print(f"Уже установлен: {os.path.normpath(existing)}\nПереустановить: --force")
         return
 
     if system not in ASSETS:
         sys.exit(f"Не знаю сборки под систему «{system}». Скачайте вручную: {RELEASE}")
 
     buf = download(f"{RELEASE}/{ASSETS[system]}")
-    print(f"Распаковываю в {TARGET} ...")
+    print(f"Распаковываю в {os.path.normpath(TARGET)} ...")
     unpack(buf, TARGET)
     binary = make_runnable(TARGET)
 
     if not binary:
-        sys.exit(f"Распаковал, но не нашёл {BINARY} внутри. Посмотрите папку {TARGET}.")
+        sys.exit(f"Распаковал, но не нашёл {BINARY} внутри. Посмотрите папку {os.path.normpath(TARGET)}.")
 
     try:
         subprocess.run([binary], capture_output=True, timeout=30)
@@ -133,7 +133,7 @@ def main():
         works = False
         print(f"Проверка запуска не удалась: {exc}", file=sys.stderr)
 
-    print(f"\n✓ Готово: {binary}")
+    print(f"\n✓ Готово: {os.path.normpath(binary)}")
     if works:
         print("✓ Запускается. Карты теперь будут собираться в 4k.")
     else:
