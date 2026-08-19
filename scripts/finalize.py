@@ -5,26 +5,34 @@
   1. Ставит подписи-капсулы ПРОГРАММНО — ровным шрифтом, одним кеглем, без
      единой опечатки. Модели врут в тексте (особенно в кириллице), поэтому
      карта генерится без надписей вообще, а имена ставятся здесь.
-  2. Поднимает разрешение через Real-ESRGAN, если он установлен. Не установлен —
-     скрипт спокойно отдаёт результат в исходном размере и печатает, как поставить.
+  2. Поднимает разрешение через Real-ESRGAN. Не установлен — предлагает поставить
+     (scripts/install_upscaler.py) и мягко увеличивает через Lanczos, чтобы карта
+     не осталась в размере 1376×768.
+
+Как задавать подписи (JSON). Рекомендуемый способ — привязка к точке маршрута:
+  [
+    {"text": "Москва", "anchor": [0.424, 0.820], "side": "below", "gap": 0.006},
+    {"text": "Переславль-Залесский", "anchor": [0.613, 0.349], "side": "left"}
+  ]
+  anchor — координаты САМОЙ ТОЧКИ на карте (её видно, снять легко);
+  side   — с какой стороны лечь капсуле: left / right / above / below;
+  gap    — зазор от точки до края капсулы, в долях ширины кадра. Одинаковый
+           у всех подписей → визуально ровный ряд. По умолчанию 0.006.
+  Ширину капсулы считает скрипт — снаружи её знать неоткуда.
+
+Старый способ (координата = ЦЕНТР капсулы) продолжает работать:
+  {"text": "Москва", "x": 0.42, "y": 0.82}
 
 Режимы:
-  place   (по умолчанию) — рисует капсулы с нуля в заданных координатах.
-          Карта при этом генерилась БЕЗ текста. Самый надёжный путь.
+  place   (по умолчанию) — рисует капсулы с нуля. Карта генерилась БЕЗ текста.
   overlay — находит капсулу, нарисованную моделью, и перекрывает её ровной.
-          Нужен, если карта уже сгенерирована с подписями.
-
-Файл подписей (JSON): координаты нормализованные, 0..1 от ширины и высоты.
-  [
-    {"text": "Владивосток",  "x": 0.077, "y": 0.543},
-    {"text": "село Лазо",    "x": 0.794, "y": 0.339, "dot": [0.79, 0.352]}
-  ]
-Поле "dot" необязательное: точка-маркер, которую нарисовать под капсулой.
 
 Примеры:
   python3 finalize.py --input map.png --labels labels.json --output final.png
   python3 finalize.py --input map.png --labels labels.json --output final.png \
-      --mode overlay --no-upscale --font-size-ratio 0.030
+      --grid                      # + копия с координатной сеткой
+  python3 finalize.py --input map.png --labels labels.json --output final.png \
+      --dot-color C25B3A --also-half
 """
 import argparse
 import json
@@ -40,7 +48,7 @@ try:
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont, ImageFilter
 except ImportError:
-    sys.exit("Нужны Pillow и numpy:  pip3 install pillow numpy")
+    sys.exit("Нужны Pillow и numpy:  pip install pillow numpy")
 
 # --- шрифты: кандидаты по платформам (все перечисленные поддерживают кириллицу) ---
 FONT_CANDIDATES = {
@@ -70,13 +78,25 @@ UPSCALER_DIRS = [
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "realesrgan"),
     os.path.join(os.environ.get("USERPROFILE", ""), "realesrgan"),
 ]
-# на Windows исполняемый файл с расширением — без него поиск не находил ничего
 UPSCALER_NAMES = (["realesrgan-ncnn-vulkan.exe", "realesrgan-ncnn-vulkan"]
                   if platform.system() == "Windows" else ["realesrgan-ncnn-vulkan"])
-UPSCALER_HOWTO = """Real-ESRGAN не найден — карта сохранена в исходном разрешении.
-Чтобы получать чёткие 4k-версии, скачайте сборку под свою систему:
-  https://github.com/xinntao/Real-ESRGAN/releases  (realesrgan-ncnn-vulkan)
-и распакуйте в ~/.claude/tools/realesrgan  (macOS: xattr -dr com.apple.quarantine <папка>)"""
+PY = "python" if platform.system() == "Windows" else "python3"
+SIDES = ("left", "right", "above", "below")
+DEFAULT_GAP = 0.006
+
+
+def upscaler_howto():
+    """Инструкция по установке — только для текущей системы, без чужих платформ."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    installer = os.path.join(here, "install_upscaler.py")
+    lines = ["Real-ESRGAN не установлен — чёткого 4k не будет.",
+             "Поставить одной командой (скачает нужную сборку под вашу систему):",
+             f"    {PY} {installer}"]
+    if platform.system() == "Darwin":
+        lines.append("Скрипт сам снимет карантин macOS — руками ничего делать не нужно.")
+    elif platform.system() == "Windows":
+        lines.append(r"Скрипт распакует всё в C:\Users\<вы>\.claude\tools\realesrgan.")
+    return "\n".join(lines)
 
 
 def font_covers(path, index, text):
@@ -202,30 +222,54 @@ def find_capsule(arr, seed_xy, scale):
     return None
 
 
+def capsule_center(item, W, H, width, cap_h, default_gap):
+    """Где встанет центр капсулы.
+
+    Есть anchor — считаем от точки: ширину капсулы знает только скрипт,
+    поэтому и зазор выдерживает он, одинаковый у всех подписей.
+    Нет anchor — старое поведение: координата и есть центр.
+    """
+    if "anchor" in item:
+        ax, ay = item["anchor"][0] * W, item["anchor"][1] * H
+        gap = item.get("gap", default_gap) * W
+        side = item.get("side", "left")
+        if side not in SIDES:
+            sys.exit(f"Неизвестная сторона «{side}» у подписи «{item['text']}». "
+                     f"Допустимые: {', '.join(SIDES)}")
+        if side == "left":
+            return ax - gap - width / 2, ay
+        if side == "right":
+            return ax + gap + width / 2, ay
+        if side == "above":
+            return ax, ay - gap - cap_h / 2
+        return ax, ay + gap + cap_h / 2  # below
+    if "x" not in item or "y" not in item:
+        sys.exit(f"У подписи «{item['text']}» нет ни anchor, ни пары x/y.")
+    return item["x"] * W, item["y"] * H
+
+
 def draw_labels(img, labels, font_path, font_idx, mode, size_ratio,
-                text_color, capsule_color, dot_color):
+                text_color, capsule_color, dot_color, default_gap):
     W, H = img.size
     cap_h = max(14, int(H * size_ratio))
     font = ImageFont.truetype(font_path, max(9, int(cap_h * 0.60)), index=font_idx)
 
-    anchors = []  # (text, cx, cy, min_width)
+    overlay_boxes = None
     if mode == "overlay":
         arr = np.array(img.convert("RGB"))
         scale = W / 1376.0  # пороги калиброваны под типовой вывод модели
+        overlay_boxes = []
         for item in labels:
-            box = find_capsule(arr, (int(item["x"] * W), int(item["y"] * H)), scale)
+            seed_x = item.get("x", item.get("anchor", [0, 0])[0])
+            seed_y = item.get("y", item.get("anchor", [0, 0])[1])
+            box = find_capsule(arr, (int(seed_x * W), int(seed_y * H)), scale)
             if box is None:
                 print(f"  !! капсула не найдена: {item['text']} — проверьте координаты "
-                      f"или используйте --mode place", file=sys.stderr)
+                      f"или используйте режим place", file=sys.stderr)
                 return None
-            minx, miny, maxx, maxy = box
-            anchors.append((item["text"], (minx + maxx) / 2, (miny + maxy) / 2,
-                            maxx - minx + 1))
-            cap_h = max(cap_h, maxy - miny + 1)
+            overlay_boxes.append(box)
+            cap_h = max(cap_h, box[3] - box[1] + 1)
         font = ImageFont.truetype(font_path, max(9, int(cap_h * 0.60)), index=font_idx)
-    else:
-        for item in labels:
-            anchors.append((item["text"], item["x"] * W, item["y"] * H, 0))
 
     shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
     sh_draw = ImageDraw.Draw(shadow)
@@ -233,9 +277,26 @@ def draw_labels(img, labels, font_path, font_idx, mode, size_ratio,
     draw = ImageDraw.Draw(top)
     blur = max(1.0, cap_h * 0.09)
 
-    for item, (text, cx, cy, min_w) in zip(labels, anchors):
+    for i, item in enumerate(labels):
+        text = item["text"]
+        tw = draw.textlength(text, font=font)
+        pad = cap_h * 0.52
+        width = tw + 2 * pad
+
+        if overlay_boxes is not None:
+            minx, miny, maxx, maxy = overlay_boxes[i]
+            cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
+            width = max(width, maxx - minx + 1)
+        else:
+            cx, cy = capsule_center(item, W, H, width, cap_h, default_gap)
+
         dot = item.get("dot")
+        if dot is True and "anchor" in item:   # нарисовать точку прямо в якоре
+            dot = item["anchor"]
         if dot:
+            if dot_color is None:
+                sys.exit("У подписи есть точка, но не задан её цвет. Укажите --dot-color "
+                         "цветом маршрута из вашего паспорта стиля, например --dot-color C25B3A.")
             r = cap_h * 0.22
             dx, dy = dot[0] * W, dot[1] * H
             sh_draw.ellipse([dx - r, dy - r + blur, dx + r, dy + r + blur],
@@ -243,9 +304,6 @@ def draw_labels(img, labels, font_path, font_idx, mode, size_ratio,
             draw.ellipse([dx - r, dy - r, dx + r, dy + r], fill=dot_color,
                          outline=(255, 255, 255, 255), width=max(1, int(cap_h * 0.06)))
 
-        tw = draw.textlength(text, font=font)
-        pad = cap_h * 0.52
-        width = max(tw + 2 * pad, min_w)
         x0, x1 = cx - width / 2, cx + width / 2
         y0, y1 = cy - cap_h / 2, cy + cap_h / 2
         radius = cap_h / 2
@@ -254,9 +312,40 @@ def draw_labels(img, labels, font_path, font_idx, mode, size_ratio,
         draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill=capsule_color)
         draw.text((cx, cy - cap_h * 0.04), text, font=font, fill=text_color, anchor="mm")
 
+        if not (0 <= x0 and x1 <= W and 0 <= y0 and y1 <= H):
+            print(f"  !! подпись «{text}» вылезает за край кадра — подвиньте anchor "
+                  f"или смените side", file=sys.stderr)
+
     shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
     out = Image.alpha_composite(img.convert("RGBA"), shadow)
     return Image.alpha_composite(out, top)
+
+
+def save_grid(img, path, step=0.05):
+    """Копия карты с координатной сеткой — чтобы снимать anchor не на глаз."""
+    W, H = img.size
+    grid = img.convert("RGB").copy()
+    draw = ImageDraw.Draw(grid, "RGBA")
+    font_path, font_idx, _ = resolve_font("0123456789.")
+    font = ImageFont.truetype(font_path, max(10, int(H * 0.018)), index=font_idx)
+    n = int(round(1 / step))
+    for i in range(n + 1):
+        v = i * step
+        x, y = v * W, v * H
+        major = i % 2 == 0
+        color = (255, 60, 60, 190) if major else (255, 255, 255, 110)
+        draw.line([(x, 0), (x, H)], fill=color, width=1)
+        draw.line([(0, y), (W, y)], fill=color, width=1)
+        if major:
+            label = f"{v:.2f}"
+            draw.rectangle([x + 2, 2, x + 4 + font.getlength(label), 4 + font.size],
+                           fill=(0, 0, 0, 150))
+            draw.text((x + 3, 3), label, font=font, fill=(255, 255, 255, 255))
+            draw.rectangle([2, y + 2, 4 + font.getlength(label), y + 4 + font.size],
+                           fill=(0, 0, 0, 150))
+            draw.text((3, y + 3), label, font=font, fill=(255, 255, 255, 255))
+    grid.save(path)
+    return path
 
 
 def parse_color(value, default_alpha=255):
@@ -273,15 +362,20 @@ def parse_color(value, default_alpha=255):
 def main():
     ap = argparse.ArgumentParser(description="route-atlas: подписи + разрешение")
     ap.add_argument("--input", required=True, help="карта, сгенерированная моделью")
-    ap.add_argument("--labels", required=True, help="JSON с подписями и координатами")
+    ap.add_argument("--labels", required=True, help="JSON с подписями")
     ap.add_argument("--output", required=True, help="итоговый файл (png/jpg)")
     ap.add_argument("--mode", choices=["place", "overlay"], default="place")
     ap.add_argument("--font", help="путь к шрифту (иначе подбирается системный)")
     ap.add_argument("--font-size-ratio", type=float, default=0.031,
                     help="высота капсулы в долях высоты кадра (по умолчанию 0.031)")
+    ap.add_argument("--gap", type=float, default=DEFAULT_GAP,
+                    help="зазор от точки до капсулы в долях ширины кадра (по умолчанию 0.006)")
     ap.add_argument("--text-color", type=parse_color, default=parse_color("303036"))
     ap.add_argument("--capsule-color", type=parse_color, default=parse_color("FFFFFF"))
-    ap.add_argument("--dot-color", type=parse_color, default=parse_color("FE9901"))
+    ap.add_argument("--dot-color", type=parse_color, default=None,
+                    help="цвет точек-маркеров — берите цвет маршрута из паспорта стиля")
+    ap.add_argument("--grid", action="store_true",
+                    help="сохранить копию с координатной сеткой (для снятия anchor)")
     ap.add_argument("--no-upscale", action="store_true")
     ap.add_argument("--upscaler-dir", help="папка с realesrgan-ncnn-vulkan")
     ap.add_argument("--also-half", action="store_true",
@@ -309,13 +403,25 @@ def main():
             except subprocess.CalledProcessError as exc:
                 print(f"Апскейл не удался ({exc}), продолжаю без него.", file=sys.stderr)
         else:
-            print(UPSCALER_HOWTO, file=sys.stderr)
+            print(upscaler_howto(), file=sys.stderr)
+            print("Пока увеличиваю мягким Lanczos ×2 — это не даёт резкости "
+                  "Real-ESRGAN, но лучше, чем исходный размер.\n", file=sys.stderr)
+            img0 = Image.open(source)
+            tmp = os.path.join(tempfile.gettempdir(), "route-atlas-lanczos.png")
+            img0.resize((img0.width * 2, img0.height * 2), Image.LANCZOS).save(tmp)
+            source = tmp
 
     img = Image.open(source)
     print(f"Холст: {img.size[0]}x{img.size[1]}, подписей: {len(labels)}")
+
+    if args.grid:
+        grid_path = os.path.splitext(args.output)[0] + "-grid.png"
+        save_grid(img, grid_path)
+        print(f"-> {grid_path} (сетка 0.05 для снятия anchor)")
+
     result = draw_labels(img, labels, font_path, font_idx, args.mode,
                          args.font_size_ratio, args.text_color,
-                         args.capsule_color, args.dot_color)
+                         args.capsule_color, args.dot_color, args.gap)
     if result is None:
         sys.exit(1)
 

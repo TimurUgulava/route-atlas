@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 OK, WARN, MISS = "✓", "!", "·"
+PY = "python" if platform.system() == "Windows" else "python3"
 
 
 def line(mark, title, detail=""):
@@ -49,7 +50,8 @@ def check_python():
                 line(WARN, package, "необязательная: хранение ключа "
                                     "в системном хранилище секретов")
     if missing:
-        print(f"\n    Установить:  pip3 install {' '.join(missing)}")
+        pip = "pip" if platform.system() == "Windows" else "pip3"
+        print(f"\n    Установить:  {pip} install {' '.join(missing)}")
     return not missing
 
 
@@ -71,7 +73,7 @@ def check_backends():
         working = working or ok
     if not working:
         print("\n    Вариант 1 — свой ключ (бесплатный тариф у Google есть):")
-        print("        python3 setup_key.py --backend gemini")
+        print(f"        {PY} setup_key.py --backend gemini")
         print("    Вариант 2 — у вас уже подключён MCP или скилл рисования:")
         print("        отдельный ключ не нужен, ассистент вызовет их напрямую.")
     return working
@@ -95,7 +97,7 @@ def check_fonts():
 def check_upscaler():
     print("\nПовышение разрешения (необязательно)")
     try:
-        from finalize import find_upscaler, UPSCALER_HOWTO
+        from finalize import find_upscaler, upscaler_howto
     except Exception as exc:
         line(WARN, "проверка не удалась", str(exc))
         return False
@@ -103,8 +105,9 @@ def check_upscaler():
     if binary:
         line(OK, "Real-ESRGAN", binary)
         return True
-    line(WARN, "Real-ESRGAN не найден", "карты будут в исходном разрешении")
-    print("\n    " + UPSCALER_HOWTO.replace("\n", "\n    "))
+    line(WARN, "Real-ESRGAN не найден",
+         "без него карта останется около 1376x768 — мало для статьи и печати")
+    print("\n    " + upscaler_howto().replace("\n", "\n    "))
     return False
 
 
