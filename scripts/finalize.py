@@ -67,7 +67,12 @@ UPSCALER_DIRS = [
     os.path.expanduser("~/.local/share/realesrgan"),
     os.path.expanduser("~/realesrgan"),
     "/usr/local/share/realesrgan",
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "realesrgan"),
+    os.path.join(os.environ.get("USERPROFILE", ""), "realesrgan"),
 ]
+# на Windows исполняемый файл с расширением — без него поиск не находил ничего
+UPSCALER_NAMES = (["realesrgan-ncnn-vulkan.exe", "realesrgan-ncnn-vulkan"]
+                  if platform.system() == "Windows" else ["realesrgan-ncnn-vulkan"])
 UPSCALER_HOWTO = """Real-ESRGAN не найден — карта сохранена в исходном разрешении.
 Чтобы получать чёткие 4k-версии, скачайте сборку под свою систему:
   https://github.com/xinntao/Real-ESRGAN/releases  (realesrgan-ncnn-vulkan)
@@ -128,15 +133,19 @@ def resolve_font(sample_text, explicit=None):
 
 
 def find_upscaler(explicit=None):
+    is_windows = platform.system() == "Windows"
     for d in ([explicit] if explicit else []) + UPSCALER_DIRS:
         if not d:
             continue
-        binary = os.path.join(d, "realesrgan-ncnn-vulkan")
-        if os.path.isfile(binary) and os.access(binary, os.X_OK):
-            return binary, os.path.join(d, "models")
-    found = shutil.which("realesrgan-ncnn-vulkan")
-    if found:
-        return found, None
+        for name in UPSCALER_NAMES:
+            binary = os.path.join(d, name)
+            # на Windows бит исполняемости не значит ничего — достаточно наличия файла
+            if os.path.isfile(binary) and (is_windows or os.access(binary, os.X_OK)):
+                return binary, os.path.join(d, "models")
+    for name in UPSCALER_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found, None
     return None, None
 
 

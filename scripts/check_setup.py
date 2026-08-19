@@ -32,14 +32,22 @@ def check_python():
         except ImportError:
             line(MISS, package, "обязательна")
             missing.append(package)
+    is_windows = platform.system() == "Windows"
     for module, package in optional.items():
         try:
             importlib.import_module(module)
             line(OK, package, "необязательная")
         except ImportError:
-            hint = ("проверка глифов шрифта" if package == "fonttools"
-                    else "хранение ключа в системном хранилище секретов")
-            line(WARN, package, f"необязательная: {hint}")
+            if package == "fonttools":
+                line(WARN, package, "необязательная: проверка глифов шрифта")
+            elif is_windows:
+                # на Windows это почти обязательная: файл .env защищён слабее,
+                # чем запись в Диспетчере учётных данных
+                line(WARN, package, "на Windows желательна: ключ ляжет "
+                                    "в Диспетчер учётных данных, а не в файл")
+            else:
+                line(WARN, package, "необязательная: хранение ключа "
+                                    "в системном хранилище секретов")
     if missing:
         print(f"\n    Установить:  pip3 install {' '.join(missing)}")
     return not missing

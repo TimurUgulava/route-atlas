@@ -6,10 +6,12 @@
 результат проверки: «ключ рабочий» или «ключ не принят».
 
 Куда кладётся (по убыванию надёжности):
-  1. Системное хранилище секретов (macOS Keychain / Windows Credential Manager /
-     Linux Secret Service) — если установлена библиотека keyring.
-  2. Файл .env рядом с проектом, с правами 600 (читает только владелец)
-     и записью в .gitignore.
+  1. Системное хранилище секретов — если установлена библиотека keyring:
+     Связка ключей на macOS, Диспетчер учётных данных на Windows,
+     Secret Service на Linux. Рекомендуемый путь: pip install keyring
+  2. Файл .env рядом с проектом, закрытый от посторонних и от git.
+     Как именно закрыт, зависит от системы: на macOS и Linux — права 600,
+     на Windows — icacls (права вида 600 там ничего не значат).
 
 Запуск:  python3 setup_key.py            (спросит, какой сервис)
          python3 setup_key.py --backend gemini
@@ -19,7 +21,9 @@
 import argparse
 import getpass
 import os
+import platform
 import stat
+import subprocess
 import sys
 
 try:
@@ -109,6 +113,27 @@ def verify(backend, key):
     return False, f"неожиданный ответ сервиса: {resp.status_code}"
 
 
+def restrict_file_access(path):
+    """Закрывает файл от посторонних. Возвращает (защищён, чем именно).
+
+    Права вида 600 — это мир macOS и Linux. На Windows они не значат ничего,
+    поэтому там доступ ограничивается штатным icacls: снимается наследование
+    и остаётся одна учётная запись — ваша.
+    """
+    if platform.system() == "Windows":
+        user = os.environ.get("USERNAME") or os.environ.get("USER")
+        if not user:
+            return False, "не удалось определить учётную запись"
+        try:
+            subprocess.run(["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+                           check=True, capture_output=True)
+            return True, "доступ только у вашей учётной записи (icacls)"
+        except Exception as exc:
+            return False, f"icacls не отработал ({exc})"
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    return True, "права 600, только владелец"
+
+
 def save_to_env_file(cfg, key):
     values = read_env_file()
     values[cfg["env"]] = key
@@ -116,7 +141,7 @@ def save_to_env_file(cfg, key):
         fh.write("# route-atlas: секреты. НЕ коммитить, НЕ пересылать.\n")
         for k, v in values.items():
             fh.write(f"{k}={v}\n")
-    os.chmod(ENV_PATH, stat.S_IRUSR | stat.S_IWUSR)  # 600: только владелец
+    protected, how = restrict_file_access(ENV_PATH)
 
     gitignore = os.path.join(PROJECT_ROOT, ".gitignore")
     lines = []
@@ -126,17 +151,27 @@ def save_to_env_file(cfg, key):
     if ".env" not in lines:
         with open(gitignore, "a", encoding="utf-8") as fh:
             fh.write("\n# секреты\n.env\n")
+    return protected, how
 
 
 def save(backend, key):
     if HAS_KEYRING:
         try:
             keyring.set_password(SERVICE, backend, key)
-            return "системное хранилище секретов"
+            store = ("Диспетчер учётных данных Windows"
+                     if platform.system() == "Windows" else "системное хранилище секретов")
+            return store
         except Exception:
             pass
-    save_to_env_file(BACKENDS[backend], key)
-    return f"{ENV_PATH} (права 600, добавлен в .gitignore)"
+
+    if platform.system() == "Windows":
+        print("\n⚠️  Библиотека keyring не установлена, поэтому ключ ляжет в файл .env.")
+        print("    На Windows файл защищён слабее, чем запись в Диспетчере учётных данных.")
+        print("    Надёжнее прервать (Ctrl+C), выполнить  pip install keyring  и повторить.")
+
+    protected, how = save_to_env_file(BACKENDS[backend], key)
+    suffix = how if protected else f"⚠️  ФАЙЛ НЕ ЗАЩИЩЁН: {how}"
+    return f"{ENV_PATH}\n  ({suffix}; добавлен в .gitignore)"
 
 
 def show_status():
