@@ -27,10 +27,19 @@
   place   (по умолчанию) — рисует капсулы с нуля. Карта генерилась БЕЗ текста.
   overlay — находит капсулу, нарисованную моделью, и перекрывает её ровной.
 
+Порядок работы: сначала черновые прогоны с --no-upscale (быстро, координаты
+подбираются за секунды), в конце — финальный прогон без этого флага.
+
+Апскейл идёт ДО простановки подписей намеренно: тогда текст рисуется сразу
+в конечном разрешении и остаётся идеально резким. Если апскейлить после,
+Real-ESRGAN обработает и буквы, а это ровно та резкость, ради которой подписи
+и делаются программно.
+
 Примеры:
-  python3 finalize.py --input map.png --labels labels.json --output final.png
-  python3 finalize.py --input map.png --labels labels.json --output final.png \
-      --grid                      # + копия с координатной сеткой
+  # черновой прогон: сетка для координат, без ожидания апскейлера
+  python3 finalize.py --input map.png --labels labels.json --output draft.png \
+      --grid --no-upscale
+  # финальный прогон
   python3 finalize.py --input map.png --labels labels.json --output final.png \
       --dot-color C25B3A --also-half
 """
@@ -391,6 +400,13 @@ def main():
     font_path, font_idx, font_name = resolve_font(sample, args.font)
     print(f"Шрифт: {font_name}")
 
+    # Сетка — инструмент для подбора координат, поэтому рисуется ДО апскейла,
+    # в исходном разрешении: файл лёгкий и готов сразу, ждать Real-ESRGAN незачем.
+    if args.grid:
+        grid_path = os.path.splitext(args.output)[0] + "-grid.png"
+        save_grid(Image.open(args.input), grid_path)
+        print(f"-> {grid_path} (сетка 0.05 для снятия anchor)")
+
     source = args.input
     if not args.no_upscale:
         binary, models = find_upscaler(args.upscaler_dir)
@@ -413,11 +429,6 @@ def main():
 
     img = Image.open(source)
     print(f"Холст: {img.size[0]}x{img.size[1]}, подписей: {len(labels)}")
-
-    if args.grid:
-        grid_path = os.path.splitext(args.output)[0] + "-grid.png"
-        save_grid(img, grid_path)
-        print(f"-> {grid_path} (сетка 0.05 для снятия anchor)")
 
     result = draw_labels(img, labels, font_path, font_idx, args.mode,
                          args.font_size_ratio, args.text_color,
