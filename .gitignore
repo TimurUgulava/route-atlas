@@ -1,0 +1,14 @@
+# секреты — никогда не коммитить
+.env
+*.key
+
+# рабочие файлы пользователя
+style-passport.md
+*-etalon.png
+output/
+wip-*
+*.pyc
+__pycache__/
+
+# macOS
+.DS_Store
