@@ -23,7 +23,7 @@ def line(mark, title, detail=""):
 
 def check_python():
     print("\nБиблиотеки Python")
-    required = {"PIL": "pillow", "numpy": "numpy", "requests": "requests"}
+    required = {"PIL": "pillow", "numpy": "numpy", "scipy": "scipy", "requests": "requests"}
     optional = {"fontTools": "fonttools", "keyring": "keyring"}
     missing = []
     for module, package in required.items():
